@@ -27,24 +27,25 @@ ft categories
 ft stats
 ```
 
-On first run, `ft sync` extracts your X session from Chrome and downloads your bookmarks into `~/.ft-bookmarks/`. It auto-classifies them into 7 categories using fast regex matching.
+On first run, `ft sync` extracts your X session from Chrome and downloads your bookmarks into `~/.ft-bookmarks/`.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
 | `ft sync` | Download and sync all bookmarks (no API required) |
+| `ft sync --classify` | Sync then classify new bookmarks with LLM |
+| `ft sync --full` | Full history crawl (not just incremental) |
 | `ft search <query>` | Full-text search with BM25 ranking |
-| `ft viz` | Terminal dashboard with sparklines and heatmaps |
-| `ft classify` | LLM classification via Claude or Codex |
-| `ft classify --regex` | Fast regex classification |
-| `ft classify-domains` | LLM domain classification (ai, finance, etc.) |
+| `ft viz` | Terminal dashboard with sparklines, categories, and domains |
+| `ft classify` | Classify by category and domain using LLM |
+| `ft classify --regex` | Classify by category using simple regex |
 | `ft categories` | Show category distribution |
+| `ft domains` | Subject domain distribution |
 | `ft stats` | Top authors, languages, date range |
 | `ft list` | Filter by author, date, category, domain |
-| `ft domains` | Subject domain distribution |
 | `ft show <id>` | Show one bookmark in detail |
-| `ft index` | Rebuild the SQLite search index |
+| `ft index` | Merge new bookmarks into search index (preserves classifications) |
 | `ft auth` | Set up OAuth for API-based sync (optional) |
 | `ft sync --api` | Sync via OAuth API (cross-platform) |
 | `ft fetch-media` | Download media assets (static images only) |
@@ -68,6 +69,9 @@ Works with Claude Code, Codex, or any agent with shell access. Just tell your ag
 ```bash
 # Sync every morning at 7am
 0 7 * * * ft sync
+
+# Sync and classify every morning
+0 7 * * * ft sync --classify
 ```
 
 ## Data

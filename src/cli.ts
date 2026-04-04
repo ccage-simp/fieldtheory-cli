@@ -175,17 +175,47 @@ function safe(fn: (...args: any[]) => Promise<void>): (...args: any[]) => Promis
 export function buildCli() {
   const program = new Command();
 
-  async function rebuildAndClassify(added: number): Promise<void> {
-    if (added <= 0) return;
-    process.stderr.write('  Indexing and classifying...\n');
-    const idx = await classifyAndRebuild();
-    process.stderr.write(`  \u2713 ${idx.recordCount} bookmarks indexed, ${Object.keys(idx.summary).length} categories\n`);
+  async function rebuildIndex(added: number): Promise<number> {
+    if (added <= 0) return 0;
+    process.stderr.write('  Building search index...\n');
+    const idx = await buildIndex();
+    process.stderr.write(`  \u2713 ${idx.recordCount} bookmarks indexed (${idx.newRecords} new)\n`);
+    return idx.newRecords;
+  }
+
+  async function classifyNew(): Promise<void> {
+    const start = Date.now();
+    process.stderr.write('  Classifying new bookmarks (categories)...\n');
+    const catResult = await classifyWithLlm({
+      onBatch: (done: number, total: number) => {
+        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+        const elapsed = Math.round((Date.now() - start) / 1000);
+        process.stderr.write(`  Categories: ${done}/${total} (${pct}%) \u2502 ${elapsed}s elapsed\n`);
+      },
+    });
+    if (catResult.classified > 0) {
+      process.stderr.write(`  \u2713 ${catResult.classified} categorized\n`);
+    }
+
+    const domStart = Date.now();
+    process.stderr.write('  Classifying new bookmarks (domains)...\n');
+    const domResult = await classifyDomainsWithLlm({
+      all: false,
+      onBatch: (done: number, total: number) => {
+        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+        const elapsed = Math.round((Date.now() - domStart) / 1000);
+        process.stderr.write(`  Domains: ${done}/${total} (${pct}%) \u2502 ${elapsed}s elapsed\n`);
+      },
+    });
+    if (domResult.classified > 0) {
+      process.stderr.write(`  \u2713 ${domResult.classified} domains assigned\n`);
+    }
   }
 
   program
     .name('ft')
     .description('Self-custody for your X/Twitter bookmarks. Sync, search, classify, and explore locally.')
-    .version('1.1.0')
+    .version('1.2.0')
     .showHelpAfterError()
     .hook('preAction', () => {
       console.log(LOGO);
@@ -198,6 +228,7 @@ export function buildCli() {
     .description('Sync bookmarks from X into your local database')
     .option('--api', 'Use OAuth v2 API instead of Chrome session', false)
     .option('--full', 'Full crawl instead of incremental sync', false)
+    .option('--classify', 'Classify new bookmarks with LLM after syncing', false)
     .option('--max-pages <n>', 'Max pages to fetch', (v: string) => Number(v), 500)
     .option('--target-adds <n>', 'Stop after N new bookmarks', (v: string) => Number(v))
     .option('--delay-ms <n>', 'Delay between requests in ms', (v: string) => Number(v), 600)
@@ -219,7 +250,10 @@ export function buildCli() {
           });
           console.log(`\n  \u2713 ${result.added} new bookmarks synced (${result.totalBookmarks} total)`);
           console.log(`  \u2713 Data: ${dataDir()}\n`);
-          await rebuildAndClassify(result.added);
+          const newCount = await rebuildIndex(result.added);
+          if (options.classify && newCount > 0) {
+            await classifyNew();
+          }
         } else {
           const startTime = Date.now();
           const result = await syncBookmarksGraphQL({
@@ -240,15 +274,20 @@ export function buildCli() {
           console.log(`  ${friendlyStopReason(result.stopReason)}`);
           console.log(`  \u2713 Data: ${dataDir()}\n`);
 
-          await rebuildAndClassify(result.added);
+          const newCount = await rebuildIndex(result.added);
+          if (options.classify && newCount > 0) {
+            await classifyNew();
+          }
         }
 
         if (firstRun) {
-          console.log(`\n  Try:  ft search "machine learning"`);
+          console.log(`\n  Next steps:`);
+          console.log(`        ft classify              Classify by category and domain (LLM)`);
+          console.log(`        ft classify --regex      Classify by category (simple)`);
+          console.log(`\n  Explore:`);
+          console.log(`        ft search "machine learning"`);
           console.log(`        ft viz`);
           console.log(`        ft categories`);
-          console.log(`\n  Classify with AI? If you have Claude or Codex installed:`);
-          console.log(`        ft classify`);
           console.log(`\n  You can also just tell Claude to use the ft CLI to search and`);
           console.log(`  explore your bookmarks. It already knows how.\n`);
         }
@@ -394,8 +433,8 @@ export function buildCli() {
 
   program
     .command('classify')
-    .description('Classify bookmarks by category using LLM (requires claude or codex CLI)')
-    .option('--regex', 'Use fast regex classification instead of LLM (instant, free)')
+    .description('Classify bookmarks by category and domain using LLM (requires claude or codex CLI)')
+    .option('--regex', 'Use simple regex classification instead of LLM')
     .action(safe(async (options) => {
       if (!requireData()) return;
       if (options.regex) {
@@ -404,14 +443,29 @@ export function buildCli() {
         console.log(`Indexed ${result.recordCount} bookmarks \u2192 ${result.dbPath}`);
         console.log(formatClassificationSummary(result.summary));
       } else {
-        process.stderr.write('Classifying bookmarks with LLM...\n');
-        const result = await classifyWithLlm({
+        let catStart = Date.now();
+        process.stderr.write('Classifying categories with LLM (batches of 50, ~2 min per batch)...\n');
+        const catResult = await classifyWithLlm({
           onBatch: (done: number, total: number) => {
-            process.stderr.write(`  Processing ${done}/${total} bookmarks...\n`);
+            const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+            const elapsed = Math.round((Date.now() - catStart) / 1000);
+            process.stderr.write(`  Categories: ${done}/${total} (${pct}%) \u2502 ${elapsed}s elapsed\n`);
           },
         });
-        console.log(`Engine: ${result.engine}`);
-        console.log(`Classified ${result.classified}/${result.totalUnclassified} (${result.batches} batches, ${result.failed} failed)`);
+        console.log(`\nEngine: ${catResult.engine}`);
+        console.log(`Categories: ${catResult.classified}/${catResult.totalUnclassified} classified`);
+
+        let domStart = Date.now();
+        process.stderr.write('\nClassifying domains with LLM (batches of 50, ~2 min per batch)...\n');
+        const domResult = await classifyDomainsWithLlm({
+          all: false,
+          onBatch: (done: number, total: number) => {
+            const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+            const elapsed = Math.round((Date.now() - domStart) / 1000);
+            process.stderr.write(`  Domains: ${done}/${total} (${pct}%) \u2502 ${elapsed}s elapsed\n`);
+          },
+        });
+        console.log(`\nDomains: ${domResult.classified}/${domResult.totalUnclassified} classified`);
       }
     }));
 
@@ -423,15 +477,17 @@ export function buildCli() {
     .option('--all', 'Re-classify all bookmarks, not just missing')
     .action(safe(async (options) => {
       if (!requireData()) return;
-      process.stderr.write('Classifying bookmark domains with LLM...\n');
+      const start = Date.now();
+      process.stderr.write('Classifying bookmark domains with LLM (batches of 50, ~2 min per batch)...\n');
       const result = await classifyDomainsWithLlm({
         all: options.all ?? false,
         onBatch: (done: number, total: number) => {
-          process.stderr.write(`  Processing ${done}/${total} bookmarks...\n`);
+          const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+          const elapsed = Math.round((Date.now() - start) / 1000);
+          process.stderr.write(`  Domains: ${done}/${total} (${pct}%) \u2502 ${elapsed}s elapsed\n`);
         },
       });
-      console.log(`Engine: ${result.engine}`);
-      console.log(`Classified ${result.classified}/${result.totalUnclassified} (${result.batches} batches, ${result.failed} failed)`);
+      console.log(`\nDomains: ${result.classified}/${result.totalUnclassified} classified`);
     }));
 
   // ── categories ──────────────────────────────────────────────────────────
@@ -477,11 +533,12 @@ export function buildCli() {
   program
     .command('index')
     .description('Rebuild the SQLite search index from the JSONL cache')
-    .action(safe(async () => {
+    .option('--force', 'Drop and rebuild from scratch (loses classifications)')
+    .action(safe(async (options) => {
       if (!requireData()) return;
       process.stderr.write('Building search index...\n');
-      const result = await buildIndex();
-      console.log(`Indexed ${result.recordCount} bookmarks \u2192 ${result.dbPath}`);
+      const result = await buildIndex({ force: Boolean(options.force) });
+      console.log(`Indexed ${result.recordCount} bookmarks (${result.newRecords} new) \u2192 ${result.dbPath}`);
     }));
 
   // ── auth ────────────────────────────────────────────────────────────────

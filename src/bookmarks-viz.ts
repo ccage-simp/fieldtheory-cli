@@ -138,6 +138,8 @@ interface VizData {
   timeCapsules: GemBookmark[];
   hiddenGems: GemBookmark[];
   risingVoices: { handle: string; count: number }[];
+  categories: { name: string; count: number }[];
+  domains: { name: string; count: number }[];
 }
 
 async function queryVizData(): Promise<VizData> {
@@ -253,7 +255,7 @@ async function queryVizData(): Promise<VizData> {
        ) singles ON b.author_handle = singles.author_handle
        WHERE length(b.text) > 250
        ORDER BY length(b.text) DESC
-       LIMIT 3`
+       LIMIT 8`
     );
     const hiddenGems: GemBookmark[] = (gemRows[0]?.values ?? []).map((r) => ({
       author: r[0] as string,
@@ -299,6 +301,34 @@ async function queryVizData(): Promise<VizData> {
     });
     rawMonthly.sort((a, b) => a.month.localeCompare(b.month));
 
+    // Categories
+    let categories: { name: string; count: number }[] = [];
+    try {
+      const catRows = db.exec(
+        `SELECT primary_category, COUNT(*) as c FROM bookmarks
+         WHERE primary_category IS NOT NULL AND primary_category != 'unclassified'
+         GROUP BY primary_category ORDER BY c DESC LIMIT 15`
+      );
+      categories = (catRows[0]?.values ?? []).map((r) => ({
+        name: r[0] as string,
+        count: r[1] as number,
+      }));
+    } catch { /* column may not exist */ }
+
+    // Domains
+    let domains: { name: string; count: number }[] = [];
+    try {
+      const domRows = db.exec(
+        `SELECT primary_domain, COUNT(*) as c FROM bookmarks
+         WHERE primary_domain IS NOT NULL AND primary_domain != ''
+         GROUP BY primary_domain ORDER BY c DESC LIMIT 15`
+      );
+      domains = (domRows[0]?.values ?? []).map((r) => ({
+        name: r[0] as string,
+        count: r[1] as number,
+      }));
+    } catch { /* column may not exist in v2 */ }
+
     return {
       total,
       uniqueAuthors: authors,
@@ -336,6 +366,8 @@ async function queryVizData(): Promise<VizData> {
       timeCapsules,
       hiddenGems,
       risingVoices,
+      categories,
+      domains,
     };
   } finally {
     db.close();
@@ -559,6 +591,50 @@ function renderMediaBreakdown(data: VizData): string[] {
   return lines;
 }
 
+function renderCategories(data: VizData): string[] {
+  const lines: string[] = [];
+  if (data.categories.length === 0) return [];
+
+  const maxCount = data.categories[0].count;
+
+  lines.push('');
+  lines.push(`  ${C.title}${BOLD}CATEGORIES${RESET}`);
+  lines.push(`  ${C.dim}what you bookmark${RESET}`);
+  lines.push('');
+
+  for (let i = 0; i < data.categories.length; i++) {
+    const cat = data.categories[i];
+    const barLen = Math.max(1, Math.round((cat.count / maxCount) * 30));
+    const fade = Math.max(0.3, 1 - (i / data.categories.length) * 0.7);
+    const r = Math.round(255 * fade), g = Math.round(180 * fade), b = Math.round(120 * fade);
+    const bar = rgb(r, g, b) + '\u2588'.repeat(barLen) + RESET;
+    lines.push(`  ${C.warm}${cat.name.padEnd(18)}${RESET} ${bar} ${C.dim}${cat.count}${RESET}`);
+  }
+  return lines;
+}
+
+function renderDomainBreakdown(data: VizData): string[] {
+  const lines: string[] = [];
+  if (data.domains.length === 0) return [];
+
+  const maxCount = data.domains[0].count;
+
+  lines.push('');
+  lines.push(`  ${C.accent}${BOLD}DOMAINS${RESET}`);
+  lines.push(`  ${C.dim}subject areas${RESET}`);
+  lines.push('');
+
+  for (let i = 0; i < data.domains.length; i++) {
+    const dom = data.domains[i];
+    const barLen = Math.max(1, Math.round((dom.count / maxCount) * 30));
+    const fade = Math.max(0.3, 1 - (i / data.domains.length) * 0.7);
+    const r = Math.round(100 * fade), g = Math.round(220 * fade), b = Math.round(230 * fade);
+    const bar = rgb(r, g, b) + '\u2588'.repeat(barLen) + RESET;
+    lines.push(`  ${C.cyan}${dom.name.padEnd(18)}${RESET} ${bar} ${C.dim}${dom.count}${RESET}`);
+  }
+  return lines;
+}
+
 function renderFingerprint(data: VizData): string[] {
   const lines: string[] = [];
 
@@ -665,17 +741,19 @@ export async function renderViz(): Promise<string> {
   const data = await queryVizData();
 
   const sections = [
-    ...renderHeader(data),
+    ...renderHiddenGems(data),
+    ...renderTimeCapsules(data),
     ...renderTopAuthors(data),
+    ...renderCategories(data),
+    ...renderDomainBreakdown(data),
     ...renderActivity(data),
     ...renderDayOfWeek(data),
     ...renderHourOfDay(data),
     ...renderDomains(data),
     ...renderMediaBreakdown(data),
-    ...renderTimeCapsules(data),
-    ...renderHiddenGems(data),
     ...renderRisingVoices(data),
     ...renderFingerprint(data),
+    ...renderHeader(data),
     '', // trailing newline
   ];
 

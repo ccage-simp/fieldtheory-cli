@@ -276,30 +276,47 @@ function insertRecord(db: Database, r: BookmarkRecord): void {
   );
 }
 
-export async function buildIndex(): Promise<{ dbPath: string; recordCount: number }> {
+export async function buildIndex(options?: { force?: boolean }): Promise<{ dbPath: string; recordCount: number; newRecords: number }> {
   const cachePath = twitterBookmarksCachePath();
   const dbPath = twitterBookmarksIndexPath();
   const records = await readJsonLines<BookmarkRecord>(cachePath);
 
   const db = await openDb(dbPath);
   try {
-    // Drop and recreate for a clean rebuild
-    db.run('DROP TABLE IF EXISTS bookmarks_fts');
-    db.run('DROP TABLE IF EXISTS bookmarks');
-    db.run('DROP TABLE IF EXISTS meta');
+    if (options?.force) {
+      db.run('DROP TABLE IF EXISTS bookmarks_fts');
+      db.run('DROP TABLE IF EXISTS bookmarks');
+      db.run('DROP TABLE IF EXISTS meta');
+    }
 
     initSchema(db);
+    ensureMigrations(db);
 
-    db.run('BEGIN TRANSACTION');
-    for (const record of records) {
-      insertRecord(db, record);
+    // Get existing IDs to skip
+    const existingIds = new Set<string>();
+    try {
+      const rows = db.exec('SELECT id FROM bookmarks');
+      for (const r of (rows[0]?.values ?? [])) {
+        existingIds.add(r[0] as string);
+      }
+    } catch { /* table may be empty */ }
+
+    const newRecords: BookmarkRecord[] = records.filter(r => !existingIds.has(r.id));
+
+    if (newRecords.length > 0) {
+      db.run('BEGIN TRANSACTION');
+      for (const record of newRecords) {
+        insertRecord(db, record);
+      }
+      db.run('COMMIT');
     }
+
     // Rebuild FTS index from content table
     db.run(`INSERT INTO bookmarks_fts(bookmarks_fts) VALUES('rebuild')`);
-    db.run('COMMIT');
 
     saveDb(db, dbPath);
-    return { dbPath, recordCount: records.length };
+    const totalRows = db.exec('SELECT COUNT(*) FROM bookmarks')[0]?.values[0]?.[0] as number;
+    return { dbPath, recordCount: totalRows, newRecords: newRecords.length };
   } finally {
     db.close();
   }
@@ -627,7 +644,7 @@ export async function classifyAndRebuild(): Promise<{
   const db = await openDb(dbPath);
   ensureMigrations(db);
   try {
-    const stmt = db.prepare(`UPDATE bookmarks SET categories = ?, primary_category = ?, github_urls = ? WHERE id = ?`);
+    const stmt = db.prepare(`UPDATE bookmarks SET categories = ?, primary_category = ?, github_urls = ? WHERE id = ? AND (primary_category = 'unclassified' OR primary_category IS NULL)`);
     for (const [id, r] of results) {
       if (r.categories.length > 0) {
         stmt.run([r.categories.join(','), r.primary, r.githubUrls.length ? JSON.stringify(r.githubUrls) : null, id]);
