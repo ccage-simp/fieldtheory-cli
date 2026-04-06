@@ -18,10 +18,13 @@ Requires Node.js 20+ and Google Chrome.
 # 1. Sync your bookmarks (needs Chrome logged into X)
 ft sync
 
-# 2. Search them
+# 2. Browse them interactively (needs fzf)
+ft browse
+
+# 3. Search them
 ft search "distributed systems"
 
-# 3. Explore
+# 4. Explore trends
 ft viz
 ft categories
 ft stats
@@ -37,6 +40,7 @@ On first run, `ft sync` extracts your X session from Chrome and downloads your b
 | `ft sync --classify` | Sync then classify new bookmarks with LLM |
 | `ft sync --full` | Full history crawl (not just incremental) |
 | `ft search <query>` | Full-text search with BM25 ranking |
+| `ft browse` | Interactive browser with live preview (needs `fzf`) |
 | `ft viz` | Terminal dashboard with sparklines, categories, and domains |
 | `ft classify` | Classify by category and domain using LLM |
 | `ft classify --regex` | Classify by category using simple regex |
@@ -45,6 +49,7 @@ On first run, `ft sync` extracts your X session from Chrome and downloads your b
 | `ft stats` | Top authors, languages, date range |
 | `ft list` | Filter by author, date, category, domain |
 | `ft show <id>` | Show one bookmark in detail |
+| `ft show <id> --open` | Show details and open in your default browser |
 | `ft index` | Merge new bookmarks into search index (preserves classifications) |
 | `ft auth` | Set up OAuth for API-based sync (optional) |
 | `ft sync --api` | Sync via OAuth API (cross-platform) |
