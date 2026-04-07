@@ -427,7 +427,21 @@ export function buildCli() {
           } else {
             if (result.quotedTweetsFilled > 0) console.log(`  \u2713 ${result.quotedTweetsFilled} quoted tweets filled`);
             if (result.textExpanded > 0) console.log(`  \u2713 ${result.textExpanded} truncated texts expanded`);
-            if (result.failed > 0) console.log(`  ${result.failed} unavailable (deleted or private)`);
+            if (result.failed > 0) {
+              // Write failure log
+              const logPath = path.join(dataDir(), 'gaps-failures.json');
+              const byReason: Record<string, number> = {};
+              for (const f of result.failures) {
+                byReason[f.reason] = (byReason[f.reason] ?? 0) + 1;
+              }
+              fs.writeFileSync(logPath, JSON.stringify({ failures: result.failures, summary: byReason }, null, 2));
+
+              console.log(`  ${result.failed} unavailable:`);
+              for (const [reason, count] of Object.entries(byReason)) {
+                console.log(`    \u2022 ${count} ${reason}`);
+              }
+              console.log(`  Details: ${logPath}`);
+            }
             if (result.bookmarkedAtMissing > 0) {
               console.log(`  ${result.bookmarkedAtMissing} bookmarks missing bookmark date \u2014 run ft sync to fill`);
             }

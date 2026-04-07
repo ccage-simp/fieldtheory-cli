@@ -568,7 +568,13 @@ export async function syncBookmarksGraphQL(
 
 const SYNDICATION_URL = 'https://cdn.syndication.twimg.com/tweet-result';
 
-async function fetchTweetViaSyndication(tweetId: string): Promise<QuotedTweetSnapshot | null> {
+interface SyndicationResult {
+  snapshot: QuotedTweetSnapshot | null;
+  status: 'ok' | 'empty' | 'not_found' | 'forbidden' | 'rate_limited' | 'server_error' | 'error';
+  httpStatus?: number;
+}
+
+async function fetchTweetViaSyndication(tweetId: string): Promise<SyndicationResult> {
   for (let attempt = 0; attempt < 4; attempt++) {
     const response = await fetch(`${SYNDICATION_URL}?id=${tweetId}&token=x`, {
       headers: {
@@ -578,24 +584,27 @@ async function fetchTweetViaSyndication(tweetId: string): Promise<QuotedTweetSna
 
     if (response.ok) {
       const data = await response.json() as any;
-      if (!data?.text) return null;
+      if (!data?.text) return { snapshot: null, status: 'empty' };
       const handle = data.user?.screen_name;
       const mediaEntities: any[] = data.mediaDetails ?? [];
       return {
-        id: String(data.id_str ?? tweetId),
-        text: data.text,
-        authorHandle: handle,
-        authorName: data.user?.name,
-        authorProfileImageUrl: data.user?.profile_image_url_https,
-        postedAt: data.created_at ?? null,
-        media: mediaEntities.map((m: any) => m.media_url_https ?? m.media_url).filter(Boolean),
-        mediaObjects: mediaEntities.map((m: any) => ({
-          type: m.type,
-          url: m.media_url_https ?? m.media_url,
-          width: m.original_info?.width,
-          height: m.original_info?.height,
-        })),
-        url: `https://x.com/${handle ?? '_'}/status/${data.id_str ?? tweetId}`,
+        status: 'ok',
+        snapshot: {
+          id: String(data.id_str ?? tweetId),
+          text: data.text,
+          authorHandle: handle,
+          authorName: data.user?.name,
+          authorProfileImageUrl: data.user?.profile_image_url_https,
+          postedAt: data.created_at ?? null,
+          media: mediaEntities.map((m: any) => m.media_url_https ?? m.media_url).filter(Boolean),
+          mediaObjects: mediaEntities.map((m: any) => ({
+            type: m.type,
+            url: m.media_url_https ?? m.media_url,
+            width: m.original_info?.width,
+            height: m.original_info?.height,
+          })),
+          url: `https://x.com/${handle ?? '_'}/status/${data.id_str ?? tweetId}`,
+        },
       };
     }
 
@@ -608,9 +617,10 @@ async function fetchTweetViaSyndication(tweetId: string): Promise<QuotedTweetSna
       continue;
     }
     // 404/403 — tweet unavailable, don't retry
-    return null;
+    const status = response.status === 404 ? 'not_found' as const : 'forbidden' as const;
+    return { snapshot: null, status, httpStatus: response.status };
   }
-  return null;
+  return { snapshot: null, status: 'rate_limited' };
 }
 
 // Text >= 275 chars may be truncated by Twitter's legacy.full_text limit
@@ -624,11 +634,18 @@ export interface GapFillProgress {
   failed: number;
 }
 
+export interface GapFillFailure {
+  tweetId: string;
+  reason: string;
+  url: string;
+}
+
 export interface GapFillResult {
   quotedTweetsFilled: number;
   textExpanded: number;
   bookmarkedAtMissing: number;
   failed: number;
+  failures: GapFillFailure[];
   total: number;
 }
 
@@ -669,6 +686,7 @@ export async function syncGaps(options?: {
   let quotedFetched = 0;
   let textExpanded = 0;
   let failed = 0;
+  const failures: GapFillFailure[] = [];
   const dbQuotedUpdates: Array<{ id: string; quotedTweet: QuotedTweetSnapshot }> = [];
   const dbTextUpdates: Array<{ id: string; text: string }> = [];
 
@@ -677,10 +695,30 @@ export async function syncGaps(options?: {
     const tweetId = allFetchIds[i];
     let snapshot: QuotedTweetSnapshot | null = null;
     try {
-      snapshot = await fetchTweetViaSyndication(tweetId);
-      if (!snapshot) failed++;
-    } catch {
+      const result = await fetchTweetViaSyndication(tweetId);
+      snapshot = result.snapshot;
+      if (!snapshot) {
+        failed++;
+        const reasons: Record<string, string> = {
+          empty: 'tweet exists but has no text content',
+          not_found: 'deleted or does not exist',
+          forbidden: 'private or suspended account',
+          rate_limited: 'rate limited after 4 retries',
+          server_error: 'X server error after 4 retries',
+        };
+        failures.push({
+          tweetId,
+          reason: reasons[result.status] ?? result.status,
+          url: `https://x.com/_/status/${tweetId}`,
+        });
+      }
+    } catch (err) {
       failed++;
+      failures.push({
+        tweetId,
+        reason: (err as Error).message ?? 'unknown error',
+        url: `https://x.com/_/status/${tweetId}`,
+      });
     }
 
     // Apply immediately so progress is accurate
@@ -729,5 +767,5 @@ export async function syncGaps(options?: {
   if (dbQuotedUpdates.length > 0) await updateQuotedTweets(dbQuotedUpdates);
   if (dbTextUpdates.length > 0) await updateBookmarkText(dbTextUpdates);
 
-  return { quotedTweetsFilled: quotedFetched, textExpanded, bookmarkedAtMissing, failed, total };
+  return { quotedTweetsFilled: quotedFetched, textExpanded, bookmarkedAtMissing, failed, failures, total };
 }
