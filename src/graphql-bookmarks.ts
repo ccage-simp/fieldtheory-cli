@@ -2,6 +2,7 @@ import { ensureDir, readJsonLines, writeJsonLines, readJson, writeJson, pathExis
 import { ensureDataDir, twitterBookmarksCachePath, twitterBookmarksMetaPath, twitterBackfillStatePath } from './paths.js';
 import { loadChromeSessionConfig } from './config.js';
 import { extractChromeXCookies } from './chrome-cookies.js';
+import { extractFirefoxXCookies } from './firefox-cookies.js';
 import type { BookmarkBackfillState, BookmarkCacheMeta, BookmarkRecord, QuotedTweetSnapshot } from './types.js';
 import { exportBookmarksForSyncSeed, updateQuotedTweets, updateBookmarkText } from './bookmarks-db.js';
 
@@ -50,13 +51,17 @@ export interface SyncOptions {
   maxMinutes?: number;
   /** Consecutive pages with 0 new bookmarks before stopping. Default: 3 */
   stalePageLimit?: number;
-  /** Chrome user-data-dir override. */
+  /** Browser id (e.g. 'chrome', 'firefox', 'brave'). */
+  browser?: string;
+  /** Chrome-family user-data-dir override. */
   chromeUserDataDir?: string;
-  /** Chrome profile directory name (e.g. "Default"). */
+  /** Chrome-family profile directory name (e.g. "Default"). */
   chromeProfileDirectory?: string;
-  /** Direct csrf token override; skips Chrome cookie extraction. */
+  /** Firefox profile directory override. */
+  firefoxProfileDir?: string;
+  /** Direct csrf token override; skips all cookie extraction. */
   csrfToken?: string;
-  /** Direct cookie header override; skips Chrome cookie extraction. */
+  /** Direct cookie header override; skips all cookie extraction. */
   cookieHeader?: string;
   /** Progress callback. */
   onProgress?: (status: SyncProgress) => void;
@@ -360,7 +365,7 @@ async function fetchPageWithRetry(csrfToken: string, cursor?: string, cookieHead
         `GraphQL Bookmarks API returned ${response.status}.\n` +
           `Response: ${text.slice(0, 300)}\n\n` +
           (response.status === 401 || response.status === 403
-            ? 'Fix: Your X session may have expired. Open Chrome, go to https://x.com, and make sure you are logged in. Then retry.'
+            ? 'Fix: Your X session may have expired. Open your browser, go to https://x.com, and make sure you are logged in. Then retry.'
             : 'This may be a temporary issue. Try again in a few minutes.')
       );
     }
@@ -450,12 +455,19 @@ export async function syncBookmarksGraphQL(
     csrfToken = options.csrfToken;
     cookieHeader = options.cookieHeader;
   } else {
-    const chromeConfig = loadChromeSessionConfig();
-    const chromeDir = options.chromeUserDataDir ?? chromeConfig.chromeUserDataDir;
-    const chromeProfile = options.chromeProfileDirectory ?? chromeConfig.chromeProfileDirectory;
-    const cookies = extractChromeXCookies(chromeDir, chromeProfile);
-    csrfToken = cookies.csrfToken;
-    cookieHeader = cookies.cookieHeader;
+    const config = loadChromeSessionConfig({ browserId: options.browser });
+
+    if (config.browser.cookieBackend === 'firefox') {
+      const cookies = extractFirefoxXCookies(options.firefoxProfileDir);
+      csrfToken = cookies.csrfToken;
+      cookieHeader = cookies.cookieHeader;
+    } else {
+      const chromeDir = options.chromeUserDataDir ?? config.chromeUserDataDir;
+      const chromeProfile = options.chromeProfileDirectory ?? config.chromeProfileDirectory;
+      const cookies = extractChromeXCookies(chromeDir, chromeProfile, config.browser);
+      csrfToken = cookies.csrfToken;
+      cookieHeader = cookies.cookieHeader;
+    }
   }
 
   ensureDataDir();

@@ -23,6 +23,7 @@ import { classifyWithLlm, classifyDomainsWithLlm } from './bookmark-classify-llm
 import { resolveEngine, detectAvailableEngines } from './engine.js';
 import { loadPreferences, savePreferences } from './preferences.js';
 import { renderViz } from './bookmarks-viz.js';
+import { listBrowserIds } from './browsers.js';
 import { dataDir, ensureDataDir, isFirstRun, twitterBookmarksIndexPath } from './paths.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -89,9 +90,10 @@ function friendlyStopReason(raw?: string): string {
 function warnIfEmpty(totalBookmarks: number): void {
   if (totalBookmarks > 0) return;
   console.log(`  \u26a0 No bookmarks were found. This usually means:`);
-  console.log(`    \u2022 Chrome needs to be fully quit first (Cmd+Q, not just closing the window)`);
-  console.log(`    \u2022 Keychain access was denied \u2014 check System Settings \u2192 Privacy & Security`);
-  console.log(`    \u2022 You may be logged into a different Chrome profile than the one with X/Twitter\n`);
+  console.log(`    \u2022 The browser needs to be fully quit first (Cmd+Q / close all windows)`);
+  console.log(`    \u2022 Keychain/keyring access was denied`);
+  console.log(`    \u2022 You may be logged into a different profile than the one with X/Twitter`);
+  console.log(`    \u2022 Try: ft sync --cookies <ct0> <auth_token>  (paste from DevTools)\n`);
 }
 
 // ── Update checker ────────────────────────────────────────────────────────
@@ -214,9 +216,10 @@ export function showWelcome(): void {
 
   Get started:
 
-    1. Open Google Chrome and log into x.com
+    1. Open your browser and log into x.com
     2. Run: ft sync
 
+  Works with Chrome, Brave, Firefox, and other browsers.
   Data will be stored at: ${dataDir()}
 `);
 }
@@ -267,10 +270,14 @@ function timeAgo(dateStr: string): string {
 }
 
 function showSyncWelcome(): void {
+  const browsers = listBrowserIds().join(', ');
   console.log(`
-  Make sure Google Chrome is open and logged into x.com.
-  Your Chrome session is used to authenticate \u2014 no passwords
+  Make sure your browser is open and logged into x.com.
+  Your browser session is used to authenticate \u2014 no passwords
   are stored or transmitted.
+
+  Supported browsers: ${browsers}
+  Use --browser <name> to choose (default: auto-detect).
 `);
 }
 
@@ -282,7 +289,7 @@ function requireData(): boolean {
 
   Get started:
 
-    1. Open Google Chrome and log into x.com
+    1. Open your browser and log into x.com
     2. Run: ft sync
 `);
     process.exitCode = 1;
@@ -389,8 +396,11 @@ export function buildCli() {
     .option('--target-adds <n>', 'Stop after N new bookmarks', (v: string) => Number(v))
     .option('--delay-ms <n>', 'Delay between requests in ms', (v: string) => Number(v), 600)
     .option('--max-minutes <n>', 'Max runtime in minutes', (v: string) => Number(v), 30)
-    .option('--chrome-user-data-dir <path>', 'Chrome user-data directory')
-    .option('--chrome-profile-directory <name>', 'Chrome profile name')
+    .option('--browser <name>', 'Browser to read session from (chrome, brave, firefox, ...)')
+    .option('--cookies <values...>', 'Pass ct0 and auth_token directly (skips browser extraction)')
+    .option('--chrome-user-data-dir <path>', 'Chrome-family user-data directory')
+    .option('--chrome-profile-directory <name>', 'Chrome-family profile name')
+    .option('--firefox-profile-dir <path>', 'Firefox profile directory')
     .action(async (options) => {
       const firstRun = isFirstRun();
       if (firstRun) showSyncWelcome();
@@ -497,14 +507,29 @@ export function buildCli() {
             const elapsed = Math.round((Date.now() - startTime) / 1000);
             return `Syncing bookmarks...  ${lastSync.newAdded} new  \u2502  page ${lastSync.page}  \u2502  ${elapsed}s`;
           });
+          // Parse --cookies <ct0> [auth_token] — variadic, gives us an array
+          let csrfToken: string | undefined;
+          let cookieHeader: string | undefined;
+          if (options.cookies && Array.isArray(options.cookies) && options.cookies.length > 0) {
+            csrfToken = String(options.cookies[0]);
+            const authToken = options.cookies.length > 1 ? String(options.cookies[1]) : undefined;
+            const parts = [`ct0=${csrfToken}`];
+            if (authToken) parts.push(`auth_token=${authToken}`);
+            cookieHeader = parts.join('; ');
+          }
+
           const result = await syncBookmarksGraphQL({
             incremental: !Boolean(options.rebuild),
             maxPages: Number(options.maxPages) || 500,
             targetAdds: typeof options.targetAdds === 'number' && !Number.isNaN(options.targetAdds) ? options.targetAdds : undefined,
             delayMs: Number(options.delayMs) || 600,
             maxMinutes: Number(options.maxMinutes) || 30,
+            browser: options.browser ? String(options.browser) : undefined,
+            csrfToken,
+            cookieHeader,
             chromeUserDataDir: options.chromeUserDataDir ? String(options.chromeUserDataDir) : undefined,
             chromeProfileDirectory: options.chromeProfileDirectory ? String(options.chromeProfileDirectory) : undefined,
+            firefoxProfileDir: options.firefoxProfileDir ? String(options.firefoxProfileDir) : undefined,
             onProgress: (status: SyncProgress) => {
               lastSync = status;
               spinner.update();
@@ -539,17 +564,19 @@ export function buildCli() {
         await checkForUpdate();
       } catch (err) {
         const msg = (err as Error).message;
-        if (firstRun && (msg.includes('cookie') || msg.includes('Cookie') || msg.includes('Keychain'))) {
+        if (firstRun && (msg.includes('cookie') || msg.includes('Cookie') || msg.includes('Keychain') || msg.includes('Safe Storage'))) {
           console.log(`
-  Couldn't connect to your Chrome session.
+  Couldn't connect to your browser session.
 
   To sync your bookmarks:
 
-    1. Open Google Chrome
-    2. Go to x.com and make sure you're logged in
-    3. Run: ft sync
+    1. Open your browser and log into x.com
+    2. Run: ft sync
 
-  If you use multiple Chrome profiles, specify which one:
+  Options:
+    ft sync --browser brave           Use a specific browser
+    ft sync --browser firefox          Use Firefox
+    ft sync --cookies <ct0> <auth>     Pass cookies directly
     ft sync --chrome-profile-directory "Profile 1"
 `);
         } else {
