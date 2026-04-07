@@ -36,14 +36,32 @@ let spinnerIdx = 0;
 /** Creates a spinner that animates independently of data callbacks. */
 function createSpinner(renderLine: () => string): { update: () => void; stop: () => void } {
   let line = '';
+  let stopped = false;
   const tick = () => {
+    if (stopped) return;
     const spin = SPINNER[spinnerIdx++ % SPINNER.length];
     process.stderr.write(`\r\x1b[K  ${spin} ${line}`);
   };
   const interval = setInterval(tick, 80);
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(interval);
+    process.stderr.write('\n');
+  };
+
+  // Graceful interrupt — stop spinner, show friendly message
+  const onSigint = () => {
+    stop();
+    console.log('\n  Interrupted. Your data is safe \u2014 progress has been saved.');
+    console.log('  Run the same command again to pick up where you left off.\n');
+    process.exit(0);
+  };
+  process.once('SIGINT', onSigint);
+
   return {
     update: () => { line = renderLine(); },
-    stop: () => { clearInterval(interval); process.stderr.write('\n'); },
+    stop: () => { process.removeListener('SIGINT', onSigint); stop(); },
   };
 }
 
