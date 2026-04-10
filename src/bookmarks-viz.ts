@@ -166,7 +166,7 @@ async function queryVizData(): Promise<VizData> {
       ELSE '00'
     END`;
     const monthBucketExpr = `CASE
-      WHEN bookmarked_at GLOB '____-__-__*' THEN substr(bookmarked_at, 1, 7)
+      WHEN bookmarked_at LIKE '____-__-__%' THEN substr(bookmarked_at, 1, 7)
       ELSE substr(bookmarked_at, -4) || '-' || ${legacyMonthNumberExpr}
     END`;
 
@@ -183,7 +183,7 @@ async function queryVizData(): Promise<VizData> {
     const dowRows = db.exec(
       `SELECT 
          CASE
-           WHEN bookmarked_at GLOB '____-__-__*' THEN 
+           WHEN bookmarked_at LIKE '____-__-__%' THEN 
              CASE strftime('%w', bookmarked_at)
                WHEN '0' THEN 'Sun' WHEN '1' THEN 'Mon' WHEN '2' THEN 'Tue'
                WHEN '3' THEN 'Wed' WHEN '4' THEN 'Thu' WHEN '5' THEN 'Fri' WHEN '6' THEN 'Sat' END
@@ -195,12 +195,18 @@ async function queryVizData(): Promise<VizData> {
 
     // Hour of day — chars 12-13 for legacy, strftime('%H') for ISO
     const hourRows = db.exec(
-      `SELECT 
-         CASE
-           WHEN bookmarked_at GLOB '____-__-__*' THEN CAST(strftime('%H', bookmarked_at) AS INTEGER)
-           ELSE CAST(substr(bookmarked_at, 12, 2) AS INTEGER)
-         END as h, COUNT(*) as c
-       FROM bookmarks WHERE bookmarked_at IS NOT NULL
+      `SELECT h, COUNT(*) as c
+       FROM (
+         SELECT
+           CASE
+             WHEN bookmarked_at LIKE '____-__-__%' THEN
+               CASE WHEN strftime('%H', bookmarked_at) IS NOT NULL THEN CAST(strftime('%H', bookmarked_at) AS INTEGER) ELSE NULL END
+             WHEN length(bookmarked_at) > 13 THEN CAST(substr(bookmarked_at, 12, 2) AS INTEGER)
+             ELSE NULL
+           END as h
+         FROM bookmarks WHERE bookmarked_at IS NOT NULL
+       )
+       WHERE h IS NOT NULL
        GROUP BY h ORDER BY h`
     );
 
