@@ -153,8 +153,8 @@ function bookmarkSortClause(direction: 'asc' | 'desc' = 'desc'): string {
   return `
     ORDER BY
       CASE
-        WHEN b.bookmarked_at GLOB '____-__-__*' THEN b.bookmarked_at
-        WHEN b.posted_at GLOB '____-__-__*' THEN b.posted_at
+        WHEN b.bookmarked_at LIKE '____-__-__%' THEN b.bookmarked_at
+        WHEN b.posted_at LIKE '____-__-__%' THEN b.posted_at
         ELSE ''
       END ${normalized},
       CAST(b.tweet_id AS INTEGER) ${normalized}
