@@ -148,7 +148,11 @@ async function queryVizData(): Promise<VizData> {
   try {
     const total = db.exec('SELECT COUNT(*) FROM bookmarks')[0]?.values[0]?.[0] as number;
     const authors = db.exec('SELECT COUNT(DISTINCT author_handle) FROM bookmarks')[0]?.values[0]?.[0] as number;
-    const range = db.exec('SELECT MIN(posted_at), MAX(posted_at) FROM bookmarks WHERE posted_at IS NOT NULL')[0]?.values[0];
+    
+    // Get true chronological range using Snowflake IDs, not text sorting
+    const earliestRow = db.exec('SELECT posted_at FROM bookmarks WHERE posted_at IS NOT NULL ORDER BY CAST(tweet_id AS INTEGER) ASC LIMIT 1');
+    const latestRow = db.exec('SELECT posted_at FROM bookmarks WHERE posted_at IS NOT NULL ORDER BY CAST(tweet_id AS INTEGER) DESC LIMIT 1');
+    const range = [earliestRow[0]?.values[0]?.[0], latestRow[0]?.values[0]?.[0]];
 
     const topAuthorsRows = db.exec(
       `SELECT author_handle, COUNT(*) as c FROM bookmarks
@@ -404,19 +408,30 @@ async function queryVizData(): Promise<VizData> {
 
 const W = 72; // box width
 
+function formatHeaderDate(dateStr: string): string {
+  if (dateStr === '?') return '?';
+  const d = new Date(dateStr);
+  if (!isNaN(d.getTime())) {
+    return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+  }
+  // Fallback for malformed legacy strings: extract Month and Year
+  const parts = dateStr.split(' ');
+  return parts.length >= 6 ? `${parts[1]} ${parts[5]}` : dateStr.slice(0, 10);
+}
+
 function renderHeader(data: VizData): string[] {
+  const W = 68;
   const lines: string[] = [];
+
   lines.push('');
   lines.push(boxTop(W));
-  lines.push(boxRow(
-    `${C.title}${BOLD}  ✦  FIELD THEORY  ·  BOOKMARK OBSERVATORY  ✦  ${RESET}`, W
-  ));
+  lines.push(boxRow(`  ${C.gold}✦${RESET}  ${BOLD}FIELD THEORY${RESET}  ${C.dim}·${RESET}  BOOKMARK OBSERVATORY  ${C.gold}✦${RESET}`, W));
   lines.push(boxDivider(W));
   lines.push(boxRow(
     `${C.text}${data.total.toLocaleString()} bookmarks${C.dim}  ·  ${C.text}${data.uniqueAuthors.toLocaleString()} voices${C.dim}  ·  ${C.text}${data.languages.length} languages`, W
   ));
   lines.push(boxRow(
-    `${C.dim}${data.dateRange.earliest.slice(0, 16)} → ${data.dateRange.latest.slice(0, 16)}`, W
+    `${C.dim}${formatHeaderDate(data.dateRange.earliest)} → ${formatHeaderDate(data.dateRange.latest)}${RESET}`, W
   ));
   lines.push(boxBottom(W));
   return lines;
