@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { buildIndex, searchBookmarks, getStats, formatSearchResults, getBookmarkById } from '../src/bookmarks-db.js';
+import { buildIndex, searchBookmarks, getStats, formatSearchResults, getBookmarkById, listBookmarks } from '../src/bookmarks-db.js';
 import { openDb, saveDb } from '../src/db.js';
 import { twitterBookmarksIndexPath } from '../src/paths.js';
 
@@ -114,6 +114,41 @@ test('searchBookmarks: no results for unmatched query', async () => {
     await buildIndex();
     const results = await searchBookmarks({ query: 'cryptocurrency', limit: 10 });
     assert.equal(results.length, 0);
+  });
+});
+
+test('listBookmarks: sorts ISO bookmark timestamps instead of tweet_id fallback', async () => {
+  await withIsolatedDataDir(async () => {
+    const sortableFixtures = [
+      {
+        ...FIXTURES[0],
+        id: 'iso-newer',
+        tweetId: '1',
+        text: 'Newer ISO bookmark',
+        url: 'https://x.com/alice/status/1',
+        bookmarkedAt: '2026-03-10T12:00:00.000Z',
+        postedAt: '2020-01-01T00:00:00Z',
+      },
+      {
+        ...FIXTURES[1],
+        id: 'iso-older',
+        tweetId: '999',
+        text: 'Older ISO bookmark',
+        url: 'https://x.com/bob/status/999',
+        bookmarkedAt: '2024-11-27T10:53:54.664Z',
+        postedAt: '2020-01-01T00:00:00Z',
+      },
+    ];
+
+    const jsonl = sortableFixtures.map((r) => JSON.stringify(r)).join('\n') + '\n';
+    await writeFile(path.join(process.env.FT_DATA_DIR!, 'bookmarks.jsonl'), jsonl);
+    await buildIndex({ force: true });
+
+    const results = await listBookmarks({ sort: 'desc', limit: 10 });
+    assert.deepEqual(
+      results.slice(0, 2).map((row) => row.id),
+      ['iso-newer', 'iso-older'],
+    );
   });
 });
 

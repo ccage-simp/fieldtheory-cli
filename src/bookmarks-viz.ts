@@ -148,7 +148,11 @@ async function queryVizData(): Promise<VizData> {
   try {
     const total = db.exec('SELECT COUNT(*) FROM bookmarks')[0]?.values[0]?.[0] as number;
     const authors = db.exec('SELECT COUNT(DISTINCT author_handle) FROM bookmarks')[0]?.values[0]?.[0] as number;
-    const range = db.exec('SELECT MIN(posted_at), MAX(posted_at) FROM bookmarks WHERE posted_at IS NOT NULL')[0]?.values[0];
+    
+    // Get true chronological range using Snowflake IDs, not text sorting
+    const earliestRow = db.exec('SELECT posted_at FROM bookmarks WHERE posted_at IS NOT NULL ORDER BY CAST(tweet_id AS INTEGER) ASC LIMIT 1');
+    const latestRow = db.exec('SELECT posted_at FROM bookmarks WHERE posted_at IS NOT NULL ORDER BY CAST(tweet_id AS INTEGER) DESC LIMIT 1');
+    const range = [earliestRow[0]?.values[0]?.[0], latestRow[0]?.values[0]?.[0]];
 
     const topAuthorsRows = db.exec(
       `SELECT author_handle, COUNT(*) as c FROM bookmarks
@@ -166,7 +170,7 @@ async function queryVizData(): Promise<VizData> {
       ELSE '00'
     END`;
     const monthBucketExpr = `CASE
-      WHEN bookmarked_at GLOB '____-__-__*' THEN substr(bookmarked_at, 1, 7)
+      WHEN bookmarked_at LIKE '____-__-__%' THEN substr(bookmarked_at, 1, 7)
       ELSE substr(bookmarked_at, -4) || '-' || ${legacyMonthNumberExpr}
     END`;
 
@@ -183,7 +187,7 @@ async function queryVizData(): Promise<VizData> {
     const dowRows = db.exec(
       `SELECT 
          CASE
-           WHEN bookmarked_at GLOB '____-__-__*' THEN 
+           WHEN bookmarked_at LIKE '____-__-__%' THEN 
              CASE strftime('%w', bookmarked_at)
                WHEN '0' THEN 'Sun' WHEN '1' THEN 'Mon' WHEN '2' THEN 'Tue'
                WHEN '3' THEN 'Wed' WHEN '4' THEN 'Thu' WHEN '5' THEN 'Fri' WHEN '6' THEN 'Sat' END
@@ -195,12 +199,18 @@ async function queryVizData(): Promise<VizData> {
 
     // Hour of day — chars 12-13 for legacy, strftime('%H') for ISO
     const hourRows = db.exec(
-      `SELECT 
-         CASE
-           WHEN bookmarked_at GLOB '____-__-__*' THEN CAST(strftime('%H', bookmarked_at) AS INTEGER)
-           ELSE CAST(substr(bookmarked_at, 12, 2) AS INTEGER)
-         END as h, COUNT(*) as c
-       FROM bookmarks WHERE bookmarked_at IS NOT NULL
+      `SELECT h, COUNT(*) as c
+       FROM (
+         SELECT
+           CASE
+             WHEN bookmarked_at LIKE '____-__-__%' THEN
+               CASE WHEN strftime('%H', bookmarked_at) IS NOT NULL THEN CAST(strftime('%H', bookmarked_at) AS INTEGER) ELSE NULL END
+             WHEN length(bookmarked_at) > 13 THEN CAST(substr(bookmarked_at, 12, 2) AS INTEGER)
+             ELSE NULL
+           END as h
+         FROM bookmarks WHERE bookmarked_at IS NOT NULL
+       )
+       WHERE h IS NOT NULL
        GROUP BY h ORDER BY h`
     );
 
@@ -398,19 +408,30 @@ async function queryVizData(): Promise<VizData> {
 
 const W = 72; // box width
 
+function formatHeaderDate(dateStr: string): string {
+  if (dateStr === '?') return '?';
+  const d = new Date(dateStr);
+  if (!isNaN(d.getTime())) {
+    return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+  }
+  // Fallback for malformed legacy strings: extract Month and Year
+  const parts = dateStr.split(' ');
+  return parts.length >= 6 ? `${parts[1]} ${parts[5]}` : dateStr.slice(0, 10);
+}
+
 function renderHeader(data: VizData): string[] {
+  const W = 68;
   const lines: string[] = [];
+
   lines.push('');
   lines.push(boxTop(W));
-  lines.push(boxRow(
-    `${C.title}${BOLD}  ✦  FIELD THEORY  ·  BOOKMARK OBSERVATORY  ✦  ${RESET}`, W
-  ));
+  lines.push(boxRow(`  ${C.gold}✦${RESET}  ${BOLD}FIELD THEORY${RESET}  ${C.dim}·${RESET}  BOOKMARK OBSERVATORY  ${C.gold}✦${RESET}`, W));
   lines.push(boxDivider(W));
   lines.push(boxRow(
     `${C.text}${data.total.toLocaleString()} bookmarks${C.dim}  ·  ${C.text}${data.uniqueAuthors.toLocaleString()} voices${C.dim}  ·  ${C.text}${data.languages.length} languages`, W
   ));
   lines.push(boxRow(
-    `${C.dim}${data.dateRange.earliest.slice(0, 16)} → ${data.dateRange.latest.slice(0, 16)}`, W
+    `${C.dim}${formatHeaderDate(data.dateRange.earliest)} → ${formatHeaderDate(data.dateRange.latest)}${RESET}`, W
   ));
   lines.push(boxBottom(W));
   return lines;
