@@ -1,9 +1,9 @@
 import type { Database } from 'sql.js';
 import { openDb, saveDb } from './db.js';
 import { parseTimestampMs, toIsoDate } from './date-utils.js';
-import { readJsonLines } from './fs.js';
-import { twitterBookmarksCachePath, twitterBookmarksIndexPath } from './paths.js';
-import type { BookmarkRecord, QuotedTweetSnapshot } from './types.js';
+import { readJsonLines, writeJsonLines } from './fs.js';
+import { twitterBookmarksCachePath, twitterBookmarksIndexPath, twitterClassificationsPath } from './paths.js';
+import type { BookmarkRecord, QuotedTweetSnapshot, ClassificationRecord } from './types.js';
 import { classifyCorpus, formatClassificationSummary } from './bookmark-classify.js';
 import type { ClassificationSummary } from './bookmark-classify.js';
 
@@ -480,6 +480,41 @@ export async function buildIndex(options?: { force?: boolean }): Promise<{ dbPat
       }
     } catch { /* table may be empty */ }
 
+    // Backup source of truth: classifications.jsonl
+    const classificationsPath = twitterClassificationsPath();
+    const storedClassifications = await readJsonLines<ClassificationRecord>(classificationsPath);
+    for (const c of storedClassifications) {
+      const existing = existingRows.get(c.id);
+      if (existing) {
+        // Hydrate domains if missing in DB but present in JSONL
+        if (!existing.domains && c.domains) {
+          existing.domains = c.domains.join(',');
+          existing.primaryDomain = c.primaryDomain ?? null;
+        }
+        // Hydrate categories if missing in DB but present in JSONL
+        if (!existing.categories && c.categories) {
+          existing.categories = c.categories.join(',');
+          existing.primaryCategory = c.primaryCategory;
+        }
+      } else {
+        // Create new placeholder for untracked record that has classification data
+        existingRows.set(c.id, {
+          categories: c.categories.join(','),
+          primaryCategory: c.primaryCategory,
+          domains: c.domains?.join(',') ?? null,
+          primaryDomain: c.primaryDomain ?? null,
+          githubUrls: null,
+          quotedTweetJson: null,
+          articleTitle: null,
+          articleText: null,
+          articleSite: null,
+          enrichedAt: null,
+          folderIds: null,
+          folderNames: null,
+        });
+      }
+    }
+
     const newRecords: BookmarkRecord[] = records.filter(r => !existingRows.has(r.id));
 
     if (records.length > 0) {
@@ -768,6 +803,79 @@ export async function exportBookmarksForSyncSeed(): Promise<BookmarkRecord[]> {
       tags: [],
       ingestedVia: 'graphql',
     }));
+  } finally {
+    db.close();
+  }
+}
+
+export async function getFzfList(): Promise<string[]> {
+  const dbPath = twitterBookmarksIndexPath();
+  const db = await openDb(dbPath);
+  ensureMigrations(db);
+
+  try {
+    const sql = `
+      SELECT
+        posted_at,
+        bookmarked_at,
+        author_handle,
+        text,
+        id,
+        tweet_id
+      FROM bookmarks
+    `;
+    const rows = db.exec(sql);
+    if (!rows.length) return [];
+
+    const items = rows[0].values.map((row) => {
+      const postedAtStr = row[0] as string | null;
+      const bookmarkedAtStr = row[1] as string | null;
+      const authorHandle = row[2] as string | null;
+      const text = row[3] as string | null;
+      const id = row[4] as string;
+      const tweetId = row[5] as string;
+
+      // Parse timestamp
+      let timestamp = 0;
+      if (bookmarkedAtStr && /^\d{4}-/.test(bookmarkedAtStr)) {
+        timestamp = new Date(bookmarkedAtStr).getTime();
+      } else if (postedAtStr) {
+        timestamp = new Date(postedAtStr).getTime();
+      }
+      
+      // Fallback to decoding the Snowflake ID
+      if (isNaN(timestamp) || timestamp === 0) {
+        try {
+          timestamp = Number(BigInt(tweetId) >> 22n) + 1288834974657;
+        } catch {
+          timestamp = 0;
+        }
+      }
+
+      const cleanText = String(text ?? '')
+        .replace(/\s+/g, ' ') // Collapse all whitespace including newlines
+        .trim()
+        .slice(0, 300);
+
+      return {
+        date: new Date(timestamp),
+        author: String(authorHandle ?? 'unknown').padEnd(15),
+        text: cleanText,
+        id,
+        timestamp
+      };
+    });
+
+    // Sort newest to oldest
+    items.sort((a, b) => b.timestamp - a.timestamp);
+
+    return items.map((item) => {
+      const yyyy = item.date.getFullYear();
+      const mm = String(item.date.getMonth() + 1).padStart(2, '0');
+      const dd = String(item.date.getDate()).padStart(2, '0');
+      const shortDate = isNaN(yyyy) ? '????-??-??' : `${yyyy}-${mm}-${dd}`;
+      return `[${shortDate}] @${item.author} ${item.text} ${item.id}`;
+    });
   } finally {
     db.close();
   }
@@ -1231,7 +1339,39 @@ export function formatSearchResults(results: SearchResult[]): string {
       const author = r.authorHandle ? `@${r.authorHandle}` : 'unknown';
       const date = r.postedAt ? r.postedAt.slice(0, 10) : '?';
       const text = r.text.length > 140 ? r.text.slice(0, 140) + '...' : r.text;
-      return `${i + 1}. [${date}] ${author}\n   ${text}\n   ${r.url}`;
+      const id = r.id;
+      return `${i + 1}. [${date}] ${author} (ID: ${id})\n   ${text}\n   ${r.url}`;
     })
     .join('\n\n');
+}
+
+export async function exportClassifications(): Promise<number> {
+  const dbPath = twitterBookmarksIndexPath();
+  const db = await openDb(dbPath);
+  ensureMigrations(db);
+
+  try {
+    const rows = db.exec(
+      `SELECT id, categories, primary_category, domains, primary_domain
+       FROM bookmarks
+       WHERE primary_category IS NOT NULL AND primary_category != 'unclassified'`
+    );
+
+    if (!rows.length || !rows[0].values.length) return 0;
+
+    const now = new Date().toISOString();
+    const records: ClassificationRecord[] = rows[0].values.map((r) => ({
+      id: r[0] as string,
+      categories: (r[1] as string)?.split(',') ?? [],
+      primaryCategory: r[2] as string,
+      domains: (r[3] as string)?.split(',') ?? undefined,
+      primaryDomain: (r[4] as string) ?? undefined,
+      classifiedAt: now,
+    }));
+
+    await writeJsonLines(twitterClassificationsPath(), records);
+    return records.length;
+  } finally {
+    db.close();
+  }
 }
