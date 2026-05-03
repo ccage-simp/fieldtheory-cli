@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { compareVersions, runWithSpinner, buildCli, parseCookieOption } from '../src/cli.js';
+import { buildIndex } from '../src/bookmarks-db.js';
 import { dataDir } from '../src/paths.js';
 import { skillWithFrontmatter } from '../src/skill.js';
 
@@ -21,6 +22,25 @@ async function captureStdout(fn: () => Promise<void>): Promise<string> {
     await fn();
   } finally {
     process.stdout.write = origWrite;
+  }
+
+  return chunks.join('');
+}
+
+async function captureStderr(fn: () => Promise<void>): Promise<string> {
+  const chunks: string[] = [];
+  const origWrite = process.stderr.write;
+  process.stderr.write = ((chunk: any, encodingOrCb?: any, cb?: any) => {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : String(chunk));
+    if (typeof encodingOrCb === 'function') encodingOrCb();
+    if (typeof cb === 'function') cb();
+    return true;
+  }) as typeof process.stderr.write;
+
+  try {
+    await fn();
+  } finally {
+    process.stderr.write = origWrite;
   }
 
   return chunks.join('');
@@ -53,6 +73,51 @@ test('showDashboard: prints update notice when cache is newer than local', async
     joined.includes('Update available') && joined.includes('99.99.99'),
     `expected update notice mentioning the cached 99.99.99 version; got:\n${joined}`,
   );
+});
+
+test('ft browse: reports missing fzf instead of silently exiting', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-browse-'));
+  const emptyPathDir = path.join(tmpDir, 'bin');
+  fs.mkdirSync(emptyPathDir);
+  fs.writeFileSync(path.join(tmpDir, 'bookmarks.jsonl'), `${JSON.stringify({
+    id: '1',
+    tweetId: '1',
+    url: 'https://x.com/alice/status/1',
+    text: 'A bookmark for browsing',
+    authorHandle: 'alice',
+    authorName: 'Alice',
+    syncedAt: '2026-01-01T00:00:00Z',
+    postedAt: '2026-01-01T12:00:00Z',
+    links: [],
+    tags: [],
+    ingestedVia: 'graphql',
+  })}\n`);
+
+  const origEnv = {
+    FT_DATA_DIR: process.env.FT_DATA_DIR,
+    PATH: process.env.PATH,
+  };
+  const origExitCode = process.exitCode;
+  process.env.FT_DATA_DIR = tmpDir;
+  process.env.PATH = emptyPathDir;
+  process.exitCode = undefined;
+
+  try {
+    await buildIndex();
+    const output = await captureStderr(async () => {
+      await buildCli().parseAsync(['node', 'ft', 'browse']);
+    });
+    assert.equal(process.exitCode, 1);
+    assert.match(output, /ft browse requires fzf/);
+    assert.match(output, /not found on PATH/);
+  } finally {
+    if (origEnv.FT_DATA_DIR === undefined) delete process.env.FT_DATA_DIR;
+    else process.env.FT_DATA_DIR = origEnv.FT_DATA_DIR;
+    if (origEnv.PATH === undefined) delete process.env.PATH;
+    else process.env.PATH = origEnv.PATH;
+    process.exitCode = origExitCode;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test('ft wiki: --engine option is registered', () => {

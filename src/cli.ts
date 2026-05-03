@@ -1104,6 +1104,17 @@ export function buildCli() {
         encoding: 'utf-8',
       });
 
+      if (fzf.error) {
+        const err = fzf.error as NodeJS.ErrnoException;
+        if (err.code === 'ENOENT') {
+          throw new Error('ft browse requires fzf, but it was not found on PATH. Install fzf, then retry: ft browse');
+        }
+        throw new Error(`fzf failed to start: ${err.message}`);
+      }
+      if (fzf.status === 2) {
+        throw new Error('fzf exited with an error while browsing bookmarks.');
+      }
+
       const selected = fzf.stdout?.trim();
       // fzf's execute() binding will naturally print the output of `ft show`
       // before exiting, so we don't need to manually re-parse and print it here.
