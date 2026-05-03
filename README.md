@@ -27,7 +27,7 @@ ft categories
 ft stats
 ```
 
-On first run, `ft sync` extracts your X session from your browser and downloads your bookmarks into `~/.ft-bookmarks/`.
+On first run, `ft sync` extracts your X session from your browser and downloads your bookmarks into `~/.fieldtheory/bookmarks/`.
 
 ## Commands
 
@@ -84,6 +84,34 @@ On first run, `ft sync` extracts your X session from your browser and downloads 
 | `ft lint` | Health-check the wiki for broken links and missing pages |
 | `ft lint --fix` | Auto-fix fixable wiki issues |
 
+### Field Theory app companion
+
+| Command | Description |
+|---------|-------------|
+| `ft paths --json` | Show canonical bookmarks, Library, Commands, and compatibility paths |
+| `ft status --json` | Show bookmark/classification status plus Field Theory paths |
+| `ft library search <query>` | Search local Field Theory Library markdown |
+| `ft library show <path>` | Print a Library page and its version metadata with `--json` |
+| `ft library create <path> --stdin` | Create a new Library page under `~/.fieldtheory/library` |
+| `ft library update <path> --stdin --expected-sha256 <hash>` | Replace a Library page with conflict protection |
+| `ft library delete <path>` | Move a Library page to Trash; the Mac app owns remote sync tombstones |
+| `ft library open <path>` | Open a Library page in the Field Theory Mac app |
+| `ft commands list` | List portable commands under `~/.fieldtheory/commands` |
+| `ft commands new <name>` | Create a reusable portable command |
+| `ft commands validate [name]` | Check command shape and guardrails |
+| `ft install app` | Download and install the latest Field Theory Mac app from `afar1/field-releases` |
+
+`ft library open` targets the packaged Field Theory app by bundle id (`com.fieldtheory.app`) instead of trusting the system-wide `fieldtheory://` handler. That avoids accidentally opening a generic Electron development app when another checkout registered the same URL scheme.
+
+For local Field Theory app development, point the CLI at the dev checkout:
+
+```bash
+export FT_APP_DEV_DIR=/Users/you/dev/fieldtheory/mac-app
+ft library open notes/example.md
+```
+
+Packaged variants can override the bundle id with `FT_APP_BUNDLE_ID`. Advanced development launchers can set `FT_APP_OPEN_COMMAND` to an executable that receives the deep-link URL as its first argument.
+
 ### Agent integration
 
 | Command | Description |
@@ -134,24 +162,31 @@ Works with Claude Code, Codex, or any agent with shell access.
 
 ## Data
 
-All data is stored locally at `~/.ft-bookmarks/`:
+Data is stored locally under `~/.fieldtheory/`:
 
 ```
-~/.ft-bookmarks/
+~/.fieldtheory/bookmarks/
   bookmarks.jsonl         # raw bookmark cache (one per line)
   bookmarks.db            # SQLite FTS5 search index
   bookmarks-meta.json     # sync metadata
   oauth-token.json        # OAuth token (if using API mode, chmod 600)
-  md/                     # markdown knowledge base (ft wiki / ft md)
+
+~/.fieldtheory/library/
+  index.md                # markdown knowledge base (ft wiki / ft md)
+
+~/.fieldtheory/commands/
+  *.md                    # portable commands used by Field Theory and agents
 ```
 
-Override the location with `FT_DATA_DIR`:
+Override locations with `FT_DATA_DIR`, `FT_LIBRARY_DIR`, and `FT_COMMANDS_DIR`:
 
 ```bash
 export FT_DATA_DIR=/path/to/custom/dir
+export FT_LIBRARY_DIR=/path/to/custom/library
+export FT_COMMANDS_DIR=/path/to/custom/commands
 ```
 
-To remove all data: `rm -rf ~/.ft-bookmarks`
+To remove bookmark and Library data: `rm -rf ~/.fieldtheory/bookmarks ~/.fieldtheory/library`
 
 ## Categories
 
@@ -204,7 +239,7 @@ Session sync extracts cookies from your browser's local database. Use `ft sync -
 
 **Chrome session sync** reads cookies from Chrome's local database, uses them for the sync request, and discards them. Cookies are never stored separately.
 
-**OAuth tokens** are stored with `chmod 600` (owner-only). Treat `~/.ft-bookmarks/oauth-token.json` like a password.
+**OAuth tokens** are stored with `chmod 600` (owner-only). Treat `~/.fieldtheory/bookmarks/oauth-token.json` like a password.
 
 **The default sync uses X's internal GraphQL API**, the same API that x.com uses in your browser. For the official v2 API, use `ft auth` + `ft sync --api`.
 
